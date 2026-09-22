@@ -1,6 +1,6 @@
 # Kollodi
 
-A locally-run personal AI assistant. Portfolio project — permissive-license models only (MIT/Apache 2.0).
+A locally-run personal AI assistant. Permissive-license models only (MIT/Apache 2.0).
 
 ## Status
 

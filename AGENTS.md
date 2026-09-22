@@ -2,9 +2,9 @@
 
 ## Project constraints
 
-- **License**: only MIT/Apache 2.0 models and dependencies. No exceptions — this
-  is a portfolio project and needs unrestricted commercial-use credibility.
-  Verify license before adding any model or ML dependency.
+- **License**: only MIT/Apache 2.0 models and dependencies. No exceptions —
+  needs unrestricted commercial-use credibility. Verify license before
+  adding any model or ML dependency.
 - **Local-first**: everything must run on a single RTX 4070Ti (12GB VRAM).
   Don't assume cloud APIs or multi-GPU setups.
 - **No premature abstraction**: build only the module being worked on. Stub
