@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Kollodi CLI. Usable from anywhere once symlinked onto PATH.
+#   kollodi            -> terminal chat (default)
+#   kollodi chat        -> terminal chat
+#   kollodi chat --debug -> terminal chat, showing raw <think> reasoning
+#   kollodi serve        -> OpenAI-compatible API server (Ctrl+C to stop)
+set -e
+cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
+source .venv/bin/activate
+source .venv/kollodi_env.sh
+
+cmd="${1:-chat}"
+[ "$#" -gt 0 ] && shift
+
+case "$cmd" in
+  chat)  exec python brain/llm.py "$@" ;;
+  serve) exec uvicorn api.server:app --host 0.0.0.0 --port 8000 ;;
+  *) echo "usage: kollodi [chat|serve] [--debug]"; exit 1 ;;
+esac
