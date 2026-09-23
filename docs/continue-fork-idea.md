@@ -1,73 +1,155 @@
-# Idea: fork Continue to add selection auto-attach (deferred)
+# Fork Continue to add selection auto-attach
 
-Not started. Revisit after Kollodi has: VS Code chat via Continue (off the
-shelf) + manual Ctrl+L selection attach + basic RAG working.
+In progress as of 2026-09-23. RAG for Kollodi itself is a separate,
+unrelated track — doesn't block or get blocked by this.
 
-## The gap
+## Final scope (superseded an earlier, abandoned design — see below)
 
-Continue auto-attaches the *current file* as a removable mention when a new
-chat starts (setting `addFileContext`, from PR continuedev/continue#5670).
-It does NOT auto-attach the current *selection* — that still requires
-Ctrl+L (VS Code) / Cmd+J (JetBrains) manually, every message.
+Auto-attach the current text selection to **every outgoing message**,
+not just when starting a new chat. Toggle, default off. Dedup via a
+per-file content hash so an unchanged selection isn't resent on every
+message in a long conversation. No cursor-position tracking (dropped;
+selection content only, for now). The attached snippet is shown
+explicitly in the chat input as a removable code block (reusing the
+same visible mechanism Ctrl+L/Ctrl+Shift+L already use) rather than
+being silently invisible in the composer — simplest option, matches
+existing UI patterns, revisit only if it turns out to be noisy in
+practice.
 
-Requested in continuedev/continue#5457, but the merged PR only solved the
-file-context third of the original ask. Last comment on that issue (from
-the original requester) notes selection + codebase auto-attach were never
-built. No newer issue found for just selection auto-attach as of 2026-09-22.
+### Abandoned earlier design (do not resurrect without rereading this)
 
-## Why this could be a good contribution
+First attempt: auto-attach only when a *new session* starts (mirroring
+`useCurrentFileAsContext`/#5670's exact trigger — hooking
+`continue.newSession`). Built, tested, worked — then discarded as
+"almost useless" once actually tried: it still required Ctrl+L for
+every message within an ongoing chat, which was the actual friction to
+remove. `git log` in the `continue` fork will show this was reverted;
+don't re-add a `continue.newSession` hook for this feature.
 
-- Maintainers (sestinj) are receptive: declined default-on due to past
-  negative feedback on cost/prompt cleanliness, but explicitly said they'd
-  welcome a togglable setting and marked the issue good-first-issue.
-- Precedent PR (#5670) shows the accepted pattern: new VS Code setting,
-  content added as a removable mention.
+Also discovered along the way: Ctrl+Shift+L (`continue.focusContinueInputWithoutClear`)
+already attaches a selection *without* starting a new chat — so
+"mid-conversation attach" already existed, manually. The real ask was
+never "make mid-conversation attach possible" but "make it automatic,
+no keypress."
 
-## Proposed design (better than #5670's approach)
+## Background / precedent research
 
-Don't dump the whole file automatically (what #5670 does). Instead:
-- Auto-attach only `{filePath, selectionText, cursorLine}` — small, cheap,
-  matches the cost objection that got #5457's file-context version pushback.
-- Give the model a `read_file` tool it can call if it decides it needs more
-  context than the selection shows (pull-on-demand, not push-everything).
-- This mirrors how Claude Code's own IDE integration behaves: selection/
-  cursor/path are pushed automatically and cheaply; full file content is
-  only fetched via an explicit tool call (Read) when actually needed.
+Continue auto-attaches the *current file* as a removable mention when a
+new chat starts (setting `useCurrentFileAsContext`, from PR
+continuedev/continue#5670, itself only partially solving
+continuedev/continue#5457's original three-part ask: file + selection +
+codebase). Selection auto-attach was never built by Continue.
+Maintainer (sestinj) was receptive to a togglable setting for this
+class of feature in #5457, having previously declined default-on due
+to cost/prompt-cleanliness feedback on the file version.
 
-## Known risk
+## Public comment
 
-A less capable model (e.g. local Qwen3-8B in Kollodi) might re-request the
-same file repeatedly instead of using the tool result efficiently.
-Mitigations to test empirically once Kollodi + tool-calling exist:
-- For small files (e.g. <200 lines), just include the full file upfront
-  instead of relying on pull-on-demand — the on-demand design only pays
-  off for larger files anyway.
-- Client-side "already sent" tracking (cheap, first line of defense):
-  keep a per-session map `{filePath: sha256 of last-sent content}`. Before
-  honoring a `read_file` tool call, check the map:
-  - checksum matches current file on disk → refuse the read, inject a
-    short marker instead ("you already have server.py, unchanged") rather
-    than resending content.
-  - checksum missing or mismatched (file changed since last sent) → serve
-    fresh content, update the stored checksum.
-  This is how Claude Code's own harness behaves in practice: after a
-  write/edit, the tool result says "file state is current in your
-  context — no need to Read it back" instead of a cache being queried —
-  the client just tracks sync state, not file bytes.
-- Considered and rejected for v1: sending deltas/diffs instead of full
-  content on a checksum mismatch, to cut resend cost further. Rejected
-  because a smaller model has to mentally apply each diff on top of its
-  memory of prior diffs, and any slip (stale mental copy, wrong line
-  offset) silently corrupts its understanding with no self-correction.
-  Full-resend-on-mismatch is self-correcting — always a clean authoritative
-  snapshot. Only revisit deltas if resend cost is a measured problem later,
-  not a hypothetical one.
+Commented on the closed issue #5457 (couldn't open a new issue or
+discussion from outside the repo — `blank_issues_enabled: false` and
+`has_discussions: false` on the actual repo, despite CONTRIBUTING.md
+and the issue template's contact_links claiming Discussions works).
+Tagged @sestinj and @s-h-a-d-o-w. Posted 2026-09-23, then **edited**
+once the scope changed (new-session idea dropped, replaced with the
+per-message + dedup design above) — the edit explains the pivot and
+why (ctrl-L only fires for new chats; ctrl-shift-L already does manual
+mid-chat attach; wanted it automatic instead).
 
-## Sequencing (decided 2026-09-22)
+## Task checklist
 
-1. Kollodi: OpenAI-compatible API server — done (`api/server.py`).
-2. Install Continue, point it at Kollodi's local endpoint, verify chat
-   works end to end from VS Code.
-3. Verify manual Ctrl+L selection-attach works against Kollodi.
-4. Add basic RAG to Kollodi (`memory/`).
-5. Only then: decide whether to actually fork Continue for this feature.
+- [x] Fork `continuedev/continue`, clone to `/home/katta/projects/continue`
+      (fork: github.com/cattabiani/continue, origin+upstream remotes set)
+- [x] Dev environment: Node v20.20.1 via nvm (`.nvmrc`-pinned), global
+      vite, `scripts/install-dependencies.sh` — clean, no errors.
+      `.envrc` (nvm use) added to `continue/` + `.git/info/exclude`
+      (local-only, never part of a PR diff).
+- [x] Commented on #5457 per CONTRIBUTING.md, then edited it once scope
+      changed (see "Public comment" above).
+- [x] Verified Extension Development Host test loop: Run and Debug ->
+      "Launch extension" opens a second VS Code window running the
+      fork's source live. Verify via "Developer: Show Running
+      Extensions", **not** the Extensions panel (that panel can show
+      stale/marketplace metadata even when the dev version is genuinely
+      running — same extension ID as the Marketplace one). Full
+      stop+restart of the debug session (not just window reload) is
+      the reliable way to pick up changes with certainty.
+      `extensions/.continue-debug/config.yaml` (gitignored) holds a
+      Kollodi model entry mirroring the real `~/.continue/config.yaml`,
+      so the Host window has a model to test against.
+- [x] Implemented final design (see "Code map" below). `tsc --noEmit`
+      clean on all 3 touched packages (core, gui, extensions/vscode).
+- [x] First manual test round (user, 2026-09-23, via real Kollodi request
+      log inspection): confirmed working correctly across ~14 messages
+      in one growing conversation — unchanged selection not resent,
+      content change (even same line) resent, location change resent,
+      reverting to older-but-not-most-recent content resent (expected:
+      only last hash tracked, not full history), repeated no-ops
+      correctly skipped twice in a row.
+- [x] Found + fixed a real bug from that testing: dedup was keyed only
+      by filepath, globally across the whole extension — so (a) the
+      same selection sent in chat A got incorrectly skipped in chat B,
+      and (b) starting a brand-new chat's first message could get
+      skipped too, if that exact content had been sent in *any* other
+      chat previously. Fixed by scoping the dedup key to
+      `(sessionId, filepath)` instead of `filepath` alone — passed
+      through the protocol request now (`{ sessionId: string }` payload
+      on `getAutoAttachSelection`). Decided (no special-casing): a new
+      chat's first message SHOULD auto-attach like any other message;
+      this fix makes that happen for free (fresh session = no prior
+      dedup entries = never spuriously skipped).
+- [ ] Re-test after the session-scoping fix: same-chat dedup still
+      works; different chats no longer share dedup state; a brand-new
+      chat's first message attaches correctly when a selection exists.
+- [ ] Add/update tests per their conventions
+- [ ] Open PR against continuedev/continue, referencing #5457
+
+## Code map (current design, implemented 2026-09-23)
+
+**New protocol message** (webview asks host "what should I attach, if
+anything" at send-time — a real request/response, not the host pushing
+unprompted, unlike `newSession`/`highlightedCode`):
+- `core/protocol/ideWebview.ts` — added
+  `getAutoAttachSelection: [undefined, RangeInFileWithContents | null]`
+  to `ToIdeFromWebviewProtocol`. Precedent for a real (non-void) webview
+  -> host response: `"jetbrains/getColors"` in the same file.
+
+**Host-side handler** (`extensions/vscode/src/extension/VsCodeMessenger.ts`,
+registered via `this.onWebview("getAutoAttachSelection", ...)`, next to
+the existing `"edit/addCurrentSelection"` handler):
+- Reads `config.experimental.useCurrentSelectionAsContext`; `null` if off.
+- Reuses `getRangeInFileWithContents(false)` from
+  `extensions/vscode/src/util/addCode.ts` (the same function Ctrl+L /
+  Ctrl+Shift+L already use) to get the live selection; `null` if empty.
+- Dedup: `extensions/vscode/src/util/selectionAutoAttachTracker.ts`
+  (new file) — `shouldSendSelection(filepath, contents)`, a
+  `Map<"sessionId:filepath", sha256>` of the last-sent hash per
+  (session, file) pair — not global, see task checklist below for why.
+  Returns
+  `false` (skip) if this exact content was already sent for that file;
+  otherwise records the new hash and returns `true`.
+
+**Webview side** (`gui/src/components/mainInput/TipTapEditor/utils/editorConfig.ts`,
+inside `onEnter`, gated on `props.isMainInput`): before reading
+`editor.getJSON()` to build the outgoing message, `await`s
+`ideMessenger.request("getAutoAttachSelection", undefined)`; if a
+non-null result comes back, inserts it as a visible, removable code
+block via a new shared helper,
+`gui/src/components/mainInput/TipTapEditor/utils/insertHighlightedCodeBlock.ts`
+(extracted from the existing `"highlightedCode"` listener in
+`useMainEditorWebviewListeners.ts`, which now calls the same shared
+helper instead of its own inline copy — no behavior change there,
+pure dedup of the insertion logic).
+
+**Setting** (schema/type/UI, unchanged shape from the earlier design,
+only the description text updated): `useCurrentSelectionAsContext` in
+`core/index.d.ts` + `core/config/sharedConfig.ts` (Zod schema + merge
+logic) + `gui/src/pages/config/sections/UserSettingsSection.tsx`
+("Auto-attach Current Selection", under Settings -> Experimental).
+
+**Why a live round-trip, not a cached/pushed value:** live selection
+state only exists in the extension host (`vscode.window.activeTextEditor`),
+unreachable from the sandboxed webview. Since the selection can change
+freely between keystrokes, asking fresh at the exact moment of send
+(rather than a host push cached in Redux) avoids staleness with no
+extra plumbing (no continuous `onDidChangeTextEditorSelection` push
+channel needed).
