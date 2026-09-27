@@ -1,12 +1,15 @@
 """OpenAI-compatible chat completions server for Kollodi.
 
 Run: uvicorn api.server:app --host 0.0.0.0 --port 8000
+Set KOLLODI_DEBUG=1 (or use `kollodi serve --debug`) to log incoming requests.
 """
 
 import json
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -17,8 +20,9 @@ from api.schemas import ChatCompletionRequest, ChatCompletionResponse
 
 llm = None
 
-# Temporary: log raw incoming requests verbatim, to see exactly what a
+# Debug only: log raw incoming requests verbatim, to see exactly what a
 # client (e.g. Continue) sends, regardless of what its docs/settings claim.
+DEBUG = os.environ.get("KOLLODI_DEBUG") == "1"
 REQUEST_LOG = Path("/tmp/kollodi_requests.jsonl")
 
 
@@ -26,6 +30,8 @@ REQUEST_LOG = Path("/tmp/kollodi_requests.jsonl")
 async def lifespan(app: FastAPI):
     global llm
     llm = load_model()
+    if DEBUG:
+        print(f"Debug: logging requests to {REQUEST_LOG}")
     yield
 
 
@@ -39,8 +45,13 @@ def health() -> dict:
 
 @app.post("/v1/chat/completions")
 def chat_completions(request: ChatCompletionRequest):
-    with REQUEST_LOG.open("a") as f:
-        f.write(request.model_dump_json() + "\n")
+    if DEBUG:
+        entry = {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "request": request.model_dump(mode="json"),
+        }
+        with REQUEST_LOG.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
 
     messages = [{"role": "system", "content": STYLE_PROMPT}]
     messages += [m.model_dump() for m in request.messages]

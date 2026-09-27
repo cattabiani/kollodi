@@ -4,6 +4,8 @@
 #   kollodi chat        -> terminal chat
 #   kollodi chat --debug -> terminal chat, showing raw <think> reasoning
 #   kollodi serve        -> OpenAI-compatible API server (Ctrl+C to stop)
+#   kollodi serve --debug -> API server, logging each request with a
+#                           timestamp to /tmp/kollodi_requests.jsonl
 set -e
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
 source .venv/bin/activate
@@ -14,6 +16,8 @@ cmd="${1:-chat}"
 
 case "$cmd" in
   chat)  exec python brain/llm.py "$@" ;;
-  serve) exec uvicorn api.server:app --host 0.0.0.0 --port 8000 ;;
+  serve)
+    [ "${1:-}" = "--debug" ] && export KOLLODI_DEBUG=1
+    exec uvicorn api.server:app --host 0.0.0.0 --port 8000 ;;
   *) echo "usage: kollodi [chat|serve] [--debug]"; exit 1 ;;
 esac
