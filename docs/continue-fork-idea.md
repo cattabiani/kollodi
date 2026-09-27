@@ -1,14 +1,16 @@
 # Fork Continue to add selection auto-attach
 
-In progress as of 2026-09-23. RAG for Kollodi itself is a separate,
+Implementation done 2026-09-27; waiting on final manual test + PR. RAG for Kollodi itself is a separate,
 unrelated track — doesn't block or get blocked by this.
 
 ## Final scope (superseded an earlier, abandoned design — see below)
 
 Auto-attach the current text selection to **every outgoing message**,
-not just when starting a new chat. Toggle, default off. Dedup via a
-per-file content hash so an unchanged selection isn't resent on every
-message in a long conversation. No cursor-position tracking (dropped;
+not just when starting a new chat. Toggle, default off. No dedup: the
+current selection is attached on every send (dedup was built, then
+dropped as not worth the complexity, 2026-09-23). Selections over 500
+lines are skipped (likely an accidental "select all"). VS Code only —
+the toggle is hidden in JetBrains. No cursor-position tracking (dropped;
 selection content only, for now). The attached snippet is shown
 explicitly in the chat input as a removable code block (reusing the
 same visible mechanism Ctrl+L/Ctrl+Shift+L already use) rather than
@@ -97,11 +99,32 @@ mid-chat attach; wanted it automatic instead).
       chat's first message SHOULD auto-attach like any other message;
       this fix makes that happen for free (fresh session = no prior
       dedup entries = never spuriously skipped).
-- [ ] Re-test after the session-scoping fix: same-chat dedup still
-      works; different chats no longer share dedup state; a brand-new
-      chat's first message attaches correctly when a selection exists.
-- [ ] Add/update tests per their conventions
-- [ ] Open PR against continuedev/continue, referencing #5457
+- [x] Dropped dedup entirely (superseding the fix above) and added a
+      500-line cap on auto-attached selections.
+- [x] Fixed a JetBrains hang (2026-09-27): `onEnter` awaited
+      `getAutoAttachSelection` on every send, but JetBrains'
+      `IdeProtocolClient` never replies to unknown message types and the
+      GUI's `request()` has no timeout, so Enter would have silently
+      stopped sending. Now the GUI only asks when the setting is on and
+      `!isJetBrains()`; the toggle is hidden in JetBrains.
+- [x] Review pass (2026-09-27) fixed three more bugs: Enter on an empty
+      input sent a code-only message (attach now runs after the
+      empty-input check); Edit mode got the selection attached twice
+      (skipped now); a second Enter while waiting for the selection sent
+      the message twice (guarded in `autoAttachSelection.ts`). Host no
+      longer re-reads config per send.
+- [x] Tests: `autoAttachSelection.test.ts` (4) + `insertHighlightedCodeBlock.test.ts`
+      (3). gui/core/vscode suites + `tsc --noEmit` clean; only failures
+      are `core/llm/llm.test.ts` API-key tests (pass with
+      `IGNORE_API_KEY_TESTS=true`).
+- [x] Squashed to one commit, force-pushed to the fork; fork PR
+      cattabiani/continue#1 holds the final description. Pre-squash
+      history kept locally as `backup/auto-attach-selection-pre-squash`.
+- [x] Manual test + demo clip (`~/Videos/pr-demo.mp4`), verified via
+      the Kollodi request log (`kollodi serve --debug`).
+- [ ] Optional: check Edit mode (Ctrl+I) doesn't attach an extra block.
+- [ ] Open PR against continuedev/continue, referencing #5457; sign the
+      CLA via comment when the bot asks.
 
 ## Code map (current design, implemented 2026-09-23)
 
@@ -120,16 +143,12 @@ the existing `"edit/addCurrentSelection"` handler):
 - Reuses `getRangeInFileWithContents(false)` from
   `extensions/vscode/src/util/addCode.ts` (the same function Ctrl+L /
   Ctrl+Shift+L already use) to get the live selection; `null` if empty.
-- Dedup: `extensions/vscode/src/util/selectionAutoAttachTracker.ts`
-  (new file) — `shouldSendSelection(filepath, contents)`, a
-  `Map<"sessionId:filepath", sha256>` of the last-sent hash per
-  (session, file) pair — not global, see task checklist below for why.
-  Returns
-  `false` (skip) if this exact content was already sent for that file;
-  otherwise records the new hash and returns `true`.
+- Returns `null` for selections over `MAX_AUTO_ATTACH_SELECTION_LINES`
+  (500).
 
 **Webview side** (`gui/src/components/mainInput/TipTapEditor/utils/editorConfig.ts`,
-inside `onEnter`, gated on `props.isMainInput`): before reading
+inside `onEnter`, gated on `props.isMainInput`, the setting being on
+(read from redux), and `!isJetBrains()`): before reading
 `editor.getJSON()` to build the outgoing message, `await`s
 `ideMessenger.request("getAutoAttachSelection", undefined)`; if a
 non-null result comes back, inserts it as a visible, removable code
@@ -144,7 +163,8 @@ pure dedup of the insertion logic).
 only the description text updated): `useCurrentSelectionAsContext` in
 `core/index.d.ts` + `core/config/sharedConfig.ts` (Zod schema + merge
 logic) + `gui/src/pages/config/sections/UserSettingsSection.tsx`
-("Auto-attach Current Selection", under Settings -> Experimental).
+("Auto-attach Current Selection", under Settings -> Experimental,
+hidden in JetBrains).
 
 **Why a live round-trip, not a cached/pushed value:** live selection
 state only exists in the extension host (`vscode.window.activeTextEditor`),
