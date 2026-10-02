@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
-from brain.llm import STYLE_PROMPT, load_model, split_tool_calls, stream_reply, strip_think
+from brain.llm import STYLE_PROMPT, load_model, split_think, split_tool_calls, stream_reply
 from api.schemas import ChatCompletionRequest, ChatCompletionResponse
 
 llm = None
@@ -55,24 +55,27 @@ def chat_completions(request: ChatCompletionRequest):
 
     messages = [{"role": "system", "content": STYLE_PROMPT}]
     messages += [m.to_llm() for m in request.messages]
+    # Qwen3 thinking is on/off only, so any effort level turns it on. No
+    # effort means off: Cline's "Reasoning Effort: none" sends nothing.
+    think = request.reasoning_effort not in (None, "none", "minimal")
 
     if request.stream:
         return StreamingResponse(
-            _stream_chunks(request.model, messages, request.tools),
+            _stream_chunks(request.model, messages, request.tools, think),
             media_type="text/event-stream",
         )
 
     reply, tool_calls = "", []
-    for kind, value in _generate(messages, request.tools):
+    for kind, value in _generate(messages, request.tools, think):
         if kind == "text":
             reply += value
-        else:
+        elif kind == "tool_call":
             tool_calls.append(_openai_tool_call(value))
     return ChatCompletionResponse.from_reply(request.model, reply, tool_calls or None)
 
 
-def _generate(messages: list[dict], tools: list[dict] | None):
-    return split_tool_calls(strip_think(stream_reply(llm, messages, tools)))
+def _generate(messages: list[dict], tools: list[dict] | None, think: bool):
+    return split_tool_calls(split_think(stream_reply(llm, messages, tools, think)))
 
 
 def _openai_tool_call(call: dict) -> dict:
@@ -88,7 +91,7 @@ def _openai_tool_call(call: dict) -> dict:
     }
 
 
-def _stream_chunks(model: str, messages: list[dict], tools: list[dict] | None):
+def _stream_chunks(model: str, messages: list[dict], tools: list[dict] | None, think: bool):
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
@@ -103,9 +106,12 @@ def _stream_chunks(model: str, messages: list[dict], tools: list[dict] | None):
         return f"data: {json.dumps(body)}\n\n"
 
     n_calls = 0
-    for kind, value in _generate(messages, tools):
+    for kind, value in _generate(messages, tools, think):
         if kind == "text":
             yield chunk({"content": value})
+        elif kind == "reasoning":
+            # Field name used by DeepSeek/vLLM; Cline shows it as thinking.
+            yield chunk({"reasoning_content": value})
         else:
             # Sent whole, in one delta: Qwen's call only parses once complete.
             yield chunk({"tool_calls": [{"index": n_calls, **_openai_tool_call(value)}]})

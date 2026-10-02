@@ -46,6 +46,21 @@ plain text chat only. Changes (2026-10-02):
   OpenAI `tool_calls` (`split_tool_calls` in `brain/llm.py`). Each call
   is streamed as one whole delta, since it only parses once complete.
 
+## Thinking, controlled from Cline
+
+Cline's **Reasoning Effort** selector (OpenAI Compatible provider
+settings, set separately for Plan and Act mode) turns Qwen3's thinking
+on and off:
+
+- `none` (Cline's default) sends no `reasoning_effort` → thinking off,
+  via the chat template's `enable_thinking=false` switch.
+- Any level (`low`/`medium`/`high`…) → thinking on. Qwen3 has no budget
+  control, so the levels all behave the same.
+
+The thinking is streamed as `reasoning_content` (the DeepSeek/vLLM field
+Cline's AI SDK reads), so Cline shows it as reasoning, separate from the
+answer.
+
 ## Open questions
 
 - Whether Qwen3-8B is capable enough to drive Cline's agent loop on real

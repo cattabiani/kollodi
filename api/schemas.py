@@ -3,7 +3,7 @@
 import time
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ChatMessage(BaseModel):
@@ -29,10 +29,14 @@ class ChatMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
+    # Keep unknown fields so the debug log shows everything a client sends.
+    model_config = ConfigDict(extra="allow")
+
     model: str = "kollodi"
     messages: list[ChatMessage]
     stream: bool = False
     tools: list[dict] | None = None
+    reasoning_effort: str | None = None
 
 
 class ChatCompletionChoice(BaseModel):

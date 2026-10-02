@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from llama_cpp import Llama
+from llama_cpp.llama_chat_format import Jinja2ChatFormatter
 
 MODEL_PATH = Path(__file__).parent / "models" / "Qwen3-8B-Q4_K_M.gguf"
 STYLE_PROMPT_PATH = Path(__file__).parent / "system_prompt.txt"
@@ -36,29 +37,45 @@ def load_model() -> Llama:
     )
 
 
-def stream_reply(llm: Llama, messages: list[dict], tools: list[dict] | None = None):
+def stream_reply(
+    llm: Llama, messages: list[dict], tools: list[dict] | None = None, think: bool = True
+):
     """Yield reply text chunks for the given chat history.
 
     `tools` (OpenAI format) are rendered into the prompt by the model's own
     chat template; Qwen3 answers with inline <tool_call> blocks, which
     split_tool_calls() pulls out of the stream.
+
+    `think=False` uses the template's `enable_thinking` switch (pre-fills an
+    empty think block). create_chat_completion() can't pass template
+    variables, so the prompt is rendered here and run as a raw completion.
     """
-    for chunk in llm.create_chat_completion(messages=messages, tools=tools, stream=True):
-        delta = chunk["choices"][0]["delta"]
-        if "content" in delta:
-            yield delta["content"]
+    result = _chat_formatter(llm)(messages=messages, tools=tools, enable_thinking=think)
+    prompt = llm.tokenize(result.prompt.encode("utf-8"), add_bos=False, special=True)
+    for chunk in llm.create_completion(prompt=prompt, stop=result.stop, max_tokens=None, stream=True):
+        yield chunk["choices"][0]["text"]
 
 
-def strip_think(chunks):
-    """Drop <think>...</think> reasoning blocks from a token stream.
+def _chat_formatter(llm: Llama) -> Jinja2ChatFormatter:
+    if not hasattr(llm, "_kollodi_formatter"):
+        llm._kollodi_formatter = Jinja2ChatFormatter(
+            template=llm.metadata["tokenizer.chat_template"],
+            eos_token=llm._model.token_get_text(llm.token_eos()),
+            bos_token=llm._model.token_get_text(llm.token_bos()),
+        )
+    return llm._kollodi_formatter
 
-    Qwen3 emits its chain-of-thought inline before the actual answer.
-    Downstream consumers (API clients, title generation, the CLI by
-    default) don't want it mixed into the visible reply.
+
+def split_think(chunks):
+    """Split a token stream into ("reasoning", str) and ("text", str) pieces.
+
+    Qwen3 emits its chain-of-thought inline, in a <think>...</think> block
+    before the actual answer. Pieces are yielded as they arrive; leading
+    whitespace of each section is trimmed.
     """
     buffer = ""
     in_think = False
-    skip_leading_ws = True  # trim whitespace left behind right after a think block
+    skip_leading_ws = True
     open_tag, close_tag = "<think>", "</think>"
 
     def emit(text: str):
@@ -68,48 +85,57 @@ def strip_think(chunks):
             if not text:
                 return
             skip_leading_ws = False
-        yield text
+        yield ("reasoning" if in_think else "text"), text
 
     for piece in chunks:
         buffer += piece
         while True:
-            if not in_think:
-                idx = buffer.find(open_tag)
-                if idx == -1:
-                    hold = max(0, len(buffer) - (len(open_tag) - 1))
-                    if hold:
-                        yield from emit(buffer[:hold])
-                        buffer = buffer[hold:]
-                    break
-                if idx:
-                    yield from emit(buffer[:idx])
-                buffer = buffer[idx + len(open_tag):]
-                in_think = True
-            else:
-                idx = buffer.find(close_tag)
-                if idx == -1:
-                    buffer = buffer[-(len(close_tag) - 1):] if len(buffer) > len(close_tag) - 1 else buffer
-                    break
-                buffer = buffer[idx + len(close_tag):]
-                in_think = False
-                skip_leading_ws = True
+            tag = close_tag if in_think else open_tag
+            idx = buffer.find(tag)
+            if idx == -1:
+                # Hold back a possible partial tag at the end of the buffer.
+                hold = max(0, len(buffer) - (len(tag) - 1))
+                if hold:
+                    yield from emit(buffer[:hold])
+                    buffer = buffer[hold:]
+                break
+            if idx:
+                yield from emit(buffer[:idx])
+            buffer = buffer[idx + len(tag):]
+            in_think = not in_think
+            skip_leading_ws = True
 
-    if not in_think and buffer:
+    if buffer:
         yield from emit(buffer)
 
 
+def strip_think(chunks):
+    """Drop <think>...</think> reasoning blocks from a token stream.
+
+    For consumers that don't want the reasoning (title generation, the CLI
+    by default).
+    """
+    for kind, text in split_think(chunks):
+        if kind == "text":
+            yield text
+
+
 def split_tool_calls(chunks):
-    """Split a (think-stripped) token stream into text and tool calls.
+    """Pull tool calls out of the ("text", str) pieces from split_think().
 
     Yields ("text", str) pieces as they arrive and ("tool_call", dict) for
     each complete <tool_call>{"name": ..., "arguments": {...}}</tool_call>
     block Qwen3 emits. A block that isn't valid JSON is passed on as text.
+    Other pieces (reasoning) pass through unchanged.
     """
     buffer = ""
     in_call = False
     open_tag, close_tag = "<tool_call>", "</tool_call>"
 
-    for piece in chunks:
+    for kind, piece in chunks:
+        if kind != "text":
+            yield kind, piece
+            continue
         buffer += piece
         while True:
             if not in_call:
