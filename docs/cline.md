@@ -65,5 +65,16 @@ answer.
 
 - Whether Qwen3-8B is capable enough to drive Cline's agent loop on real
   tasks — to be found out by using it.
-- Selection auto-attach (the Continue feature): only worth porting if it
-  is still missed after using Cline for a while.
+- Selection auto-attach (the Continue feature): missed right away. Cline's
+  "Add to Cline" (Ctrl+L, rebound in `~/.config/Code/User/keybindings.json`
+  since Cline's `cmd+'` never fires on Linux) is manual, and it inserts a
+  file mention next to the snippet, so the whole file is sent too.
+  Asked to implement it on cline/cline#12463 (existing feature request),
+  tagging @saoudrizwan, 2026-10-02:
+  https://github.com/cline/cline/discussions/12463#discussioncomment-18716733
+  CONTRIBUTING requires maintainer approval before feature PRs, so no
+  development until a reply. Odds are low: no maintainer replies on the
+  ~56 latest feature requests sampled. Fallback if the terminal is
+  acceptable: OpenCode already does this (auto-attaches the selection,
+  snippet only).
+  Fork/clone not done yet; cloning Cline needs `git-lfs` installed.
