@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
-from brain.llm import STYLE_PROMPT, load_model, stream_reply, strip_think
+from brain.llm import STYLE_PROMPT, load_model, split_tool_calls, stream_reply, strip_think
 from api.schemas import ChatCompletionRequest, ChatCompletionResponse
 
 llm = None
@@ -54,38 +54,62 @@ def chat_completions(request: ChatCompletionRequest):
             f.write(json.dumps(entry) + "\n")
 
     messages = [{"role": "system", "content": STYLE_PROMPT}]
-    messages += [m.model_dump() for m in request.messages]
+    messages += [m.to_llm() for m in request.messages]
 
     if request.stream:
         return StreamingResponse(
-            _stream_chunks(request.model, messages),
+            _stream_chunks(request.model, messages, request.tools),
             media_type="text/event-stream",
         )
 
-    reply = "".join(strip_think(stream_reply(llm, messages)))
-    return ChatCompletionResponse.from_reply(request.model, reply)
+    reply, tool_calls = "", []
+    for kind, value in _generate(messages, request.tools):
+        if kind == "text":
+            reply += value
+        else:
+            tool_calls.append(_openai_tool_call(value))
+    return ChatCompletionResponse.from_reply(request.model, reply, tool_calls or None)
 
 
-def _stream_chunks(model: str, messages: list[dict]):
+def _generate(messages: list[dict], tools: list[dict] | None):
+    return split_tool_calls(strip_think(stream_reply(llm, messages, tools)))
+
+
+def _openai_tool_call(call: dict) -> dict:
+    """Qwen's {"name", "arguments": {...}} -> OpenAI's tool_calls entry."""
+    arguments = call.get("arguments", {})
+    return {
+        "id": f"call_{uuid.uuid4().hex[:24]}",
+        "type": "function",
+        "function": {
+            "name": call["name"],
+            "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments),
+        },
+    }
+
+
+def _stream_chunks(model: str, messages: list[dict], tools: list[dict] | None):
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
-    for piece in strip_think(stream_reply(llm, messages)):
-        chunk = {
+    def chunk(delta: dict, finish_reason: str | None = None) -> str:
+        body = {
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
-            "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
-        yield f"data: {json.dumps(chunk)}\n\n"
+        return f"data: {json.dumps(body)}\n\n"
 
-    final_chunk = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-    }
-    yield f"data: {json.dumps(final_chunk)}\n\n"
+    n_calls = 0
+    for kind, value in _generate(messages, tools):
+        if kind == "text":
+            yield chunk({"content": value})
+        else:
+            # Sent whole, in one delta: Qwen's call only parses once complete.
+            yield chunk({"tool_calls": [{"index": n_calls, **_openai_tool_call(value)}]})
+            n_calls += 1
+
+    yield chunk({}, "tool_calls" if n_calls else "stop")
     yield "data: [DONE]\n\n"

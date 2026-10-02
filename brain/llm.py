@@ -3,6 +3,7 @@
 Run manually: python brain/llm.py
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -25,15 +26,24 @@ def load_model() -> Llama:
         )
     return Llama(
         model_path=str(MODEL_PATH),
-        n_ctx=8192,
+        # 32k fits in 12GB only with flash attention (~10.8GB measured with
+        # a ~20k-token prompt); without it context creation fails. Agentic
+        # clients like Cline need the room: their system prompt is large.
+        n_ctx=32768,
+        flash_attn=True,
         n_gpu_layers=-1,  # offload all layers to GPU
         verbose=False,
     )
 
 
-def stream_reply(llm: Llama, messages: list[dict]):
-    """Yield reply text chunks for the given chat history."""
-    for chunk in llm.create_chat_completion(messages=messages, stream=True):
+def stream_reply(llm: Llama, messages: list[dict], tools: list[dict] | None = None):
+    """Yield reply text chunks for the given chat history.
+
+    `tools` (OpenAI format) are rendered into the prompt by the model's own
+    chat template; Qwen3 answers with inline <tool_call> blocks, which
+    split_tool_calls() pulls out of the stream.
+    """
+    for chunk in llm.create_chat_completion(messages=messages, tools=tools, stream=True):
         delta = chunk["choices"][0]["delta"]
         if "content" in delta:
             yield delta["content"]
@@ -86,6 +96,52 @@ def strip_think(chunks):
 
     if not in_think and buffer:
         yield from emit(buffer)
+
+
+def split_tool_calls(chunks):
+    """Split a (think-stripped) token stream into text and tool calls.
+
+    Yields ("text", str) pieces as they arrive and ("tool_call", dict) for
+    each complete <tool_call>{"name": ..., "arguments": {...}}</tool_call>
+    block Qwen3 emits. A block that isn't valid JSON is passed on as text.
+    """
+    buffer = ""
+    in_call = False
+    open_tag, close_tag = "<tool_call>", "</tool_call>"
+
+    for piece in chunks:
+        buffer += piece
+        while True:
+            if not in_call:
+                idx = buffer.find(open_tag)
+                if idx == -1:
+                    hold = max(0, len(buffer) - (len(open_tag) - 1))
+                    if hold:
+                        yield "text", buffer[:hold]
+                        buffer = buffer[hold:]
+                    break
+                if idx:
+                    yield "text", buffer[:idx]
+                buffer = buffer[idx + len(open_tag):]
+                in_call = True
+            else:
+                idx = buffer.find(close_tag)
+                if idx == -1:
+                    break
+                raw = buffer[:idx]
+                buffer = buffer[idx + len(close_tag):].lstrip()
+                in_call = False
+                try:
+                    call = json.loads(raw)
+                    if not isinstance(call, dict) or "name" not in call:
+                        raise ValueError
+                except ValueError:
+                    yield "text", open_tag + raw + close_tag
+                    continue
+                yield "tool_call", call
+
+    if buffer:
+        yield "text", (open_tag + buffer) if in_call else buffer
 
 
 def chat_loop(debug: bool = False) -> None:
