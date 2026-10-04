@@ -2,10 +2,10 @@
 
 **Closed 2026-10-02: Continue is dead.** Its README now says the repo is
 "no longer actively maintained and is read-only for all users" (final
-2.0.0 release), so the upstream PR can never land. Replaced by Cline —
-see [cline.md](cline.md). The implementation stays on the fork
+2.0.0 release), so the upstream PR can never land. Replaced by Cline, then Twinny —
+see [vscode-frontend.md](vscode-frontend.md). The implementation stays on the fork
 (cattabiani/continue, branch `feat/auto-attach-selection`) as a
-reference if the same feature is ever ported to Cline. Everything below
+reference. Everything below
 is the historical record.
 
 Implementation done 2026-09-27; waiting on final manual test + PR. RAG for Kollodi itself is a separate,
